@@ -1,0 +1,1949 @@
+const constants = require('../constants');
+const userService = require('../service/userService');
+const songService = require("../service/songService");
+const artistService = require("../service/artistService");
+const couponService = require('../service/couponService');
+var SoxCommand = require('sox-audio');
+var TimeFormat = SoxCommand.TimeFormat;
+var sox = require('sox');
+const axios = require("axios");
+const fs = require("fs");
+const jwt = require("jsonwebtoken");
+var qs = require('qs');
+const bcrypt = require('bcrypt');
+
+const nodemailer = require('nodemailer');
+const slugify = require('slugify');
+
+const ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
+const ffmpeg = require("fluent-ffmpeg");
+ffmpeg.setFfmpegPath(ffmpegPath);
+var moment = require("moment");
+const e = require('express');
+
+class ErrorHandler extends Error {
+  constructor(msg, status) {
+    super(msg, status);
+    this.name = msg ? msg : "FancyError";
+    this.status = status ? status : "500";
+  }
+  _errorManager() {
+    return { message: this.name, status: this.status };
+  }
+}
+
+const mergeFile = async (file_path,origial_music_file,output_file_name) => {
+  return new Promise((resolve,reject)=>{
+    const command = ffmpeg();
+    const commandArray = [];
+    command.addInput(
+      "./uploads/karaoke/"+origial_music_file
+    );
+    commandArray.push(`[0]volume=0.3[a1]`);
+    command.addInput(file_path);
+    commandArray.push(`[1]volume=1[a2]`);
+    let ffmpegKeys = "[a1][a2]amix=inputs=2[a]";
+
+    commandArray.push(ffmpegKeys);
+    command.complexFilter(commandArray);
+
+    command
+      .addOptions(["-map 0:v?", "-map [a]", "-c:v copy"])
+      // .addOptions(["-map 0:v", "-map [a]", "-c:v copy"])
+
+      .format("mp3")
+      .on("error", (error) => {
+        return reject(new Error(error))
+      })
+      .on("end", ()=> {
+        resolve()
+      })
+      .save("./uploads/user_karaoke/"+output_file_name);
+  });
+};
+
+module.exports.sendOtp = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+
+
+    const responseFromService = await userService.loginByOtp(req.body);
+
+    if (responseFromService && responseFromService.status) {
+
+      const getData = async (trackingConfig) => {
+        //console.log(trackingConfig);
+        try {
+          const response = await axios(trackingConfig);
+  
+          let res = { status: true, data: response.data.message };
+          return res;
+        } catch (error) {
+          var message = "";
+          for (let i in error.response.data) {
+            message += (message ? ", " : "") + JSON.stringify(error.response.data[i]);
+          }
+          let res = { status: false, data: message };
+          return res;
+        }
+      };
+      
+  
+        let post_data = {
+          "api_token": "npy5glsq-jmal0fg5-79rn7mxm-pavwwslu-730osb9o",
+          "sid": "DHLRBRAND",
+          "msisdn": responseFromService.data.mobile,
+          "sms": "Dear User, "+responseFromService.data.otp_code+" is the OTP to login to your DHAKARECORD account.",
+          "csms_id": Date.now()
+        };
+        var config = {
+          method: 'post',
+          url: 'https://smsplus.sslwireless.com/api/v3/send-sms',
+          data : post_data
+        };
+        
+        console.log(post_data);
+  
+      await getData(config)
+
+      response.status = 200;
+      response.message = constants.userMessage.OTP_SENT;
+      response.body = {};
+      //console.log(httpResponse.body.message);
+      return res.status(response.status).send(response);
+    } else {
+      response.status = 203;
+      response.message = responseFromService.message;
+      response.body = {};
+      return res.status(response.status).send(response);
+    }
+  } catch (error) {
+    console.log("Something went wrong: Controller: login", error);
+    response.message = error.message;
+    return res.status(400).send(response);
+  }
+};
+module.exports.otpValidation = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    const responseFromService = await userService.otpValidation(req.body);
+    if (responseFromService) {
+      if(responseFromService.status){
+        response.status = 200;
+        response.message = constants.userMessage.VALID_OTP;
+        response.body = responseFromService;
+      }else{
+        response.status = 202;
+        response.message = constants.userMessage.VALID_OTP;
+        response.body = responseFromService;
+      }
+    } else {
+      response.status = 203;
+      response.message = constants.userMessage.INVALID_OTP;
+    }
+  } catch (error) {
+    response.status = 400;
+    console.log("Something went wrong: Controller: login", error);
+    response.message = error.message;
+  }
+  return res.status(response.status).send(response);
+};
+module.exports.socialLogin = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    const responseFromService = await userService.socialLogin(req.body);
+    if (responseFromService.status) {
+      response.status = 200;
+      response.message = constants.userMessage.LOGIN_SUCCESS;
+      response.body = responseFromService;
+    } else {
+      response.status = 202;
+      response.message = responseFromService.message;
+      response.body = responseFromService;
+      
+    }
+  } catch (error) {
+    response.status = 400;
+    console.log("Something went wrong: Controller: login", error);
+    response.message = error.message;
+  }
+  return res.status(response.status).send(response);
+};
+
+module.exports.signup = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    if(req.file){
+      var filePath = '';
+      var oldpath = req.file.path;
+      var random_number = Math.floor((Math.random() * 10000000000) + 1);
+      var file_name = random_number + "_" + req.file.originalname;
+      filePath = process.env.PHYSICAL_MEDIA_PATH + 'profile_pic/' + file_name;
+      // filePath = './uploads/' + random_number + "_" + req.file.originalname;
+      fs.rename(oldpath, filePath, function (err) {
+        if (err) throw err;
+      });
+      req.body.profile_pic = file_name;
+    }else{
+      req.body.profile_pic = "";
+    }
+    const responseFromService = await userService.signup(req.body);
+    if (responseFromService.status) {
+      response.status = 200;
+      response.message = constants.userMessage.SIGNUP_SUCCESS;
+      response.body = responseFromService;
+    } else {
+      response.status = 203;
+      response.message = responseFromService.message;
+    }
+  } catch (error) {
+    console.log('Something went wrong: Controller: signup', error);
+    response.message = error.message;
+  }
+  return res.status(response.status).send(response);
+}
+
+module.exports.login = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    const responseFromService = await userService.login(req.body);
+    if(responseFromService.status){
+      response.status = 200;
+      response.message = constants.userMessage.LOGIN_SUCCESS;
+      response.body = responseFromService;
+    }else{
+      response.status = 202;
+      response.message = responseFromService.message;
+      response.body = responseFromService
+    }
+   
+  } catch (error) {
+    console.log('Something went wrong: Controller: login', error);
+    response.message = error.message;
+  }
+  return res.status(response.status).send(response);
+}
+module.exports.updateProfile = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    const token = req.headers.authorization.split("Bearer")[1].trim();
+    const decoded = jwt.verify(token, process.env.SECRET_KEY || "my-secret-key");
+    
+    const prevProfileDetails =  await userService.getUserById({ id: decoded.id });
+
+    if(req.file){
+      var filePath = '';
+      var oldpath = req.file.path;
+      var random_number = Math.floor((Math.random() * 10000000000) + 1);
+      var file_name = random_number + "_" + req.file.originalname;
+      filePath = process.env.PHYSICAL_MEDIA_PATH + 'profile_pic/' + file_name;
+      // filePath = './uploads/' + random_number + "_" + req.file.originalname;
+      fs.rename(oldpath, filePath, function (err) {
+        if (err) throw err;
+      });
+      req.body.profile_pic = file_name;
+    }
+
+    let allowUpdate = true;
+
+    if(prevProfileDetails.email!=""){
+      if(!req.body.email || req.body.email==""){
+        allowUpdate = false;
+        response.status = 203;
+        response.message = "Please enter email.";
+      }
+    }
+
+    if(req.body.email){
+      let search = {
+        email:req.body.email
+      };
+      let findCustomer = await userService.findCustomer(search)
+      if(findCustomer){
+        if(findCustomer.id != decoded.id){
+          allowUpdate = false;
+          response.status = 203;
+          response.message = "This Email id is already in use. Please use a different email id.";
+        }
+      }
+      
+    }
+    if(allowUpdate){
+      let updateInfo = {
+        "name": req.body.name?req.body.name:prevProfileDetails.profile_pic,
+        "dob":req.body.dob?req.body.dob:prevProfileDetails.dob,
+        "gender":req.body.gender?req.body.gender:prevProfileDetails.gender,
+        "profile_pic":req.body.profile_pic?req.body.profile_pic:prevProfileDetails.profile_pic,
+        "email":req.body.email?req.body.email:prevProfileDetails.email
+      }
+  
+      const responseFromService = await userService.updateProfile({ id:decoded.id,updateInfo:updateInfo });
+      if (responseFromService) {
+        response.status = 200;
+        response.message = constants.genericMessage.DATA_UPDATED;
+        if (responseFromService.profile_pic) {
+          let profile_pic = responseFromService.profile_pic;
+          if(!profile_pic.includes('://')){
+            responseFromService.profile_pic = process.env.MEDIA_PATH + "profile_pic/" + profile_pic;
+          }
+          
+        }
+        response.body = responseFromService;
+      } else {
+        response.status = 203;
+        response.message = responseFromService.message;
+      }
+    }
+    
+  } catch (error) {
+    console.log('Something went wrong: Controller: signup', error);
+    response.message = error.message;
+  }
+  return res.status(response.status).send(response);
+}
+module.exports.addtoFavourite = async (req, res) => {
+  
+  let response = { ...constants.defaultServerResponse };
+  try {
+
+    let songDetails = await songService.getSongsById({id:req.body.song_id});
+
+    if (req.headers.authorization) {
+     if (req.body.user_id) {
+        if (!songDetails.id) {
+            response.status = 202;
+            response.message =constants.genericMessage.INVALID_SONG_REQUEST;
+        }else{
+          const wishlist = await userService.findWishList({
+            song_id: songDetails.id,
+            user_id: req.body.user_id
+          });
+
+          if (!wishlist.length) {
+            await userService.insertWishList({
+              song_id: req.body.song_id,
+              user_id: req.body.user_id,
+              is_deleted: "0",
+            });
+            response.status = 200;
+            response.message =constants.genericMessage.WISHLISTED;
+          
+          } else {
+            response.status = 202;
+            response.message =constants.genericMessage.ALLREADY_WISHLISTED;
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.log("Something went wrong: Controller: getProductById", error);
+    response.message = error.message;
+  }
+  return res.status(response.status).send(response);
+};
+exports.deleteFavourite = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    
+    let song = await userService.findWishList({
+      id: req.params.id,
+      user_id: req.body.user_id
+    });
+    
+    if (song && song.length) {
+      await userService.deleteWishlist({ id: req.params.id });
+      response.message = constants.genericMessage.WISHLIST_DELETED;
+      response.status = 200;
+    }
+    else { 
+      response.status = 202;
+      response.message = constants.genericMessage.INVALID_REQUEST; 
+    }
+  } catch (error) {
+    // response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: deleteCategory", error.message);
+    response.message = ["401", "406"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+exports.getFavouriteList = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+   
+    let favouriteData = await userService.findWishList({user_id:req.body.user_id});
+    let favouriteList = [];
+    if (favouriteData.length) {
+      for (let i in favouriteData) {
+        if(favouriteData[i].song_id){
+          if (favouriteData[i].song_id.thumb_img) {
+            favouriteData[i].song_id.thumb_img = process.env.MEDIA_PATH + "songs/thumb_image/" + favouriteData[i].song_id.thumb_img;
+          }
+          if (favouriteData[i].song_id.media_file) {
+            favouriteData[i].song_id.media_file = process.env.MEDIA_PATH + "songs/" + favouriteData[i].song_id.media_file;
+          }
+          let songArtist = favouriteData[i].song_id.artists;
+          let artist_name = [];
+          for(artist of songArtist){
+            let getArtist = await artistService.getArtistById({id:artist});
+            artist_name.push(getArtist.title);
+          }
+
+          favouriteList.push({
+            "id":favouriteData[i].id,
+            "song_id":favouriteData[i].song_id.id,
+            "playCount": favouriteData[i].song_id.playCount,
+            "downloadCount": favouriteData[i].song_id.downloadCount,
+            "title": favouriteData[i].song_id.title,
+            "description": favouriteData[i].song_id.description,
+            "thumb_img": favouriteData[i].song_id.thumb_img,
+            "media_file": favouriteData[i].song_id.media_file,
+            "artist":artist_name.toString(),
+            "duration": favouriteData[i].song_id.duration?favouriteData[i].song_id.duration:"0",
+            "title2": slugify(favouriteData[i].song_id.title)
+          })
+        }
+        
+
+        
+      }
+
+      response.status = 200;
+      response.body = favouriteList;
+    }else {
+      response.status = 203;
+      response.message = `NO DATA FOUND`;
+      response.body = [];
+    }
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: getFavouriteList", error);
+    response.message = ["401", "406"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+module.exports.combine = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    sox.identify('./uploads/file_example_WAV_1MG.wav', function(err, results) {
+      console.log(err);
+    });
+    // var startTimeFormatted = TimeFormat.formatTimeAbsolute(5);
+    // var endTimeFormatted = TimeFormat.formatTimeRelativeToEnd(10);
+    // var command = SoxCommand();
+    // var trimFirstFileSubCommand = SoxCommand()
+    // .input('./uploads/file_example_WAV_1MG.wav')
+    // .output('-p')
+    // .outputFileType('wav')
+    // .trim(startTimeFormatted);
+
+    // var trimLastFileSubCommand = SoxCommand()
+    // .input('./uploads/file_example_WAV_2MG.wav')
+    // .output('-p')
+    // .outputFileType('wav')
+    // .trim(0, endTimeFormatted);
+    // console.log("Coming");
+
+    // command.inputSubCommand(trimFirstFileSubCommand)
+    // .input('./uploads/file_example_WAV_1MG.wav')
+    // .inputSubCommand(trimLastFileSubCommand)
+    //   .output("./uploads/test.wav")
+    //   .concat();
+
+    //   command.run();
+
+
+
+
+    response.status = 200;
+    response.message = constants.userMessage.SIGNUP_SUCCESS;
+    //response.body = responseFromService;
+  } catch (error) {
+    console.log('Something went wrong: Controller: signup', error);
+    response.message = error.message;
+  }
+  return res.status(response.status).send(response);
+}
+module.exports.createPlaylist = async (req, res) => {
+  
+  let response = { ...constants.defaultServerResponse };
+  let random = Math.floor(Math.random() * 10000000 + 1);
+  try {
+    if (req.headers.authorization) {
+     if (req.body.user_id) {
+        let thumb_image = "playlist.png";
+        if(req.file){
+          let oldpath = req.file.path;
+          let name = req.file.originalname.replace(/ /g, "_");
+          thumb_image = `${random}_${name}`;
+          let img_path = `./uploads/playlist/${thumb_image}`;
+          fs.rename(oldpath, img_path, function (err) {
+            if (err) throw new ErrorHandler(`${err}`, "406")._errorManager();
+          });
+        }
+
+        let responseFromService = await userService.playlistcreate({ id: req.body.user_id,  title:req.body.title, image:thumb_image})
+        if(responseFromService.status){
+          response.status = 200;
+          response.message =responseFromService.message;
+        }else{
+          response.status = 203;
+          response.body = [];
+          response.message =responseFromService.message;
+        }
+      }
+    }
+  } catch (error) {
+    console.log("Something went wrong: Controller: getProductById", error);
+    response.message = error.message;
+  }
+  return res.status(response.status).send(response);
+};
+
+exports.fetchPlaylist = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+   
+    var playlist = await userService.fetchPlaylist({ id: req.body.user_id })
+    let userPlaylist = [];
+    for (list of playlist) {
+      let count = await userService.countPlaylistSong({ id: list.id });
+      userPlaylist.push({
+        image: list.image?`${process.env.MEDIA_PATH + "/playlist/"}${list.image}`:`${process.env.MEDIA_PATH + "/playlist/playlist.png"}`,
+        title: list.title,
+        id: list.id,
+        song_count:count
+      })
+    }
+   
+    if (userPlaylist.length) {
+      response.status = 200;
+      response.body = userPlaylist;
+    } else {
+      response.status = 203;
+      response.message = `NO DATA FOUND`;
+      response.body = [];
+    }
+
+
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: getFavouriteList", error);
+    response.message = ["401", "406"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+exports.deletePlaylist = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    
+    let findData = await userService.findPlayList({
+      id: req.params.id,
+      user_id: req.body.user_id
+    });
+    
+    if (findData && findData.length) {
+      await userService.deletePlaylist({ id: req.params.id });
+      response.message = "Playlist Deleted";
+      response.status = 200;
+    }
+    else { 
+      response.status = 202;
+      response.message = constants.genericMessage.INVALID_REQUEST; 
+    }
+  } catch (error) {
+    // response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: deleteCategory", error.message);
+    response.message = ["401", "406"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+module.exports.addPlaylistSong = async (req, res) => {
+  
+  let response = { ...constants.defaultServerResponse };
+  let random = Math.floor(Math.random() * 10000000 + 1);
+  try {
+    if (req.headers.authorization) {
+     if (req.body.user_id) {
+        let responseFromService = await userService.addplaylistSong({user_id: req.body.user_id, playlist_id: req.body.playlist_id,  songs:req.body.songs})
+        if(responseFromService.status){
+          response.status = 200;
+          response.message =responseFromService.message;
+        }else{
+          response.status = 203;
+          response.body = [];
+          response.message =responseFromService.message;
+        }
+      }
+    }
+  } catch (error) {
+    console.log("Something went wrong: Controller: getProductById", error);
+    response.message = error.message;
+  }
+  return res.status(response.status).send(response);
+};
+
+exports.playlistDetails = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+  
+    if (req.headers.authorization) {
+      let playlistSong = [];
+      if (req.body.user_id) {
+        let findData = await userService.findPlayList({
+          id: req.params.id,
+          user_id: req.body.user_id
+        });
+        if(findData.length){
+            let playlstData = await userService.playlistDetails({ id: req.params.id, user_id: req.body.user_id });
+              for (let i in playlstData) {
+                console.log(playlstData[i])
+                if (playlstData[i].song_id.thumb_img) {
+                  playlstData[i].song_id.thumb_img = process.env.MEDIA_PATH + "songs/thumb_image/" + playlstData[i].song_id.thumb_img;
+                }
+                if (playlstData[i].song_id.media_file) {
+                  playlstData[i].song_id.media_file = process.env.MEDIA_PATH + "songs/" + playlstData[i].song_id.media_file;
+                }
+                let songArtist = playlstData[i].song_id.artists;
+                let artist_name = [];
+                for(artist of songArtist){
+                  let getArtist = await artistService.getArtistById({id:artist});
+                  artist_name.push(getArtist.title);
+                }
+        
+                playlistSong.push({
+                  "id":playlstData[i].id,
+                  "song_id":playlstData[i].song_id.id,
+                  "playCount": playlstData[i].song_id.playCount,
+                  "downloadCount": playlstData[i].song_id.downloadCount,
+                  "title": playlstData[i].song_id.title,
+                  "description": playlstData[i].song_id.description,
+                  "thumb_img": playlstData[i].song_id.thumb_img,
+                  "media_file": playlstData[i].song_id.media_file,
+                  "artist":artist_name.toString(),
+                  "duration": playlstData[i].song_id.duration?playlstData[i].song_id.duration:"0",
+                  "title2": slugify(playlstData[i].song_id.title)
+                })
+              }
+            }
+
+          response.status = 200;
+          response.message = "Playlist song fetched";
+          response.body = playlistSong;
+          response.playlistDetails = findData;
+        }
+    }
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: updateCategory", error.message);
+    response.message = ["401", "406"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+module.exports.removePlaylistSong = async (req, res) => {
+  
+  let response = { ...constants.defaultServerResponse };
+  let random = Math.floor(Math.random() * 10000000 + 1);
+  try {
+   
+    if (req.headers.authorization) {
+     if (req.body.user_id) {
+       let responseFromService = await userService.removeplaylistSong({ user_id: req.body.user_id, playlist_id: req.body.playlist_id, songs: req.body.songs })
+       console.log(responseFromService)
+        if(responseFromService.status){
+          response.status = 200;
+          response.message =responseFromService.message;
+        }else{
+          response.status = 202;
+          response.message =responseFromService.message;
+        }
+      }
+    }
+  } catch (error) {
+    console.log("Something went wrong: Controller: removePlaylistSong", error);
+    response.message = error.message;
+  }
+  return res.status(response.status).send(response);
+};
+
+exports.karaokeList = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+   
+    var karaokelist = await songService.getKaraokeList({ id: req.body.user_id, skip:req.query.skip?req.query.skip:0, limit: req.query.limit?req.query.limit:0})
+    let data = karaokelist.map((item) => {
+      let obj = {
+        id: item.id,
+        title:item.title,
+        lyrics: `${process.env.MEDIA_PATH + "karaoke/"}${item.lyrics}`,
+        song: `${process.env.MEDIA_PATH + "karaoke/"}${item.song}`,
+        vocal: item.vocal,
+        lyricist: item.lyricist,
+        composer: item.composer,
+        lyrics_data: item.lyricsData,
+        image:`${process.env.MEDIA_PATH + "karaoke/"}${item.image}`,
+      };
+      return obj;
+    });
+   
+    if (data.length) {
+      response.status = 200;
+      response.body = data;
+    } else {
+      response.status = 203;
+      response.body = [];
+      response.message = `NO DATA FOUND`;
+    }
+
+
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: karaokeList", error);
+    response.message = ["401", "406"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+exports.insertKaraoke = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    let random = Math.floor(Math.random() * 10000000 + 1);
+    let karaoke_file_name = Math.floor(Math.random() * 10000000 + 1)+".mp3";
+    if (!req.body) throw new ErrorHandler(`You are not authorised!!!`, "400")._errorManager();
+    if (!req.file) throw new ErrorHandler(`Please select an karaoke file!!!`, "400")._errorManager();
+
+    const {user_id, song_id } = req.body;
+    let oldpath = req.file.path;
+    let name = req.file.originalname.replace(/ /g, "_");
+    let new_name = `${random}_${name}`;
+    let file_path = `./uploads/user_karaoke/${new_name}`;
+    fs.rename(oldpath, file_path, function (err) {
+      if (err) throw new ErrorHandler(`${err}`, "406")._errorManager();
+    });
+
+    var findKaraoke = await songService.getKaraoke({ id: song_id });
+    if(findKaraoke){
+      await mergeFile(file_path,findKaraoke.song,karaoke_file_name);
+      let data = {
+        user_id: user_id,
+        song_id:song_id,
+        karaoke_file:new_name,
+        output_file:karaoke_file_name
+      };
+      let banner = await userService.insertUserKaraoke(data);
+      if (banner) {
+        response.status = 200;
+        response.body.output_file = `${process.env.MEDIA_PATH + "user_karaoke/"}${karaoke_file_name}`;
+        response.message = constants.genericMessage.DATA_INSERTED;
+      } else throw new ErrorHandler(`${constants.genericMessage.TRY_AGAIN}`, "406")._errorManager();
+    }else{
+      throw new ErrorHandler(`Invalid Song ID!!!`, "400")._errorManager();
+    }
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: insertKaraoke", error.message);
+    response.message = ["401", "406", "400"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+
+exports.getUserCreatedKaraoke = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    const { user_id, user_role, accessPermission } = req.body;
+    let data;
+    let search = {is_deleted:'n',user_id:user_id};
+    let categoryData = await userService.getAllUserKaraoke(search);
+
+    categoryData = categoryData.map((item) => {
+      let obj = item;
+      obj.karaoke_file = `${process.env.MEDIA_PATH + "user_karaoke/"}${item.karaoke_file}`;
+      obj.output_file = `${process.env.MEDIA_PATH + "user_karaoke/"}${item.output_file}`;
+      obj.song_id.song = `${process.env.MEDIA_PATH + "karaoke/"}${item.song_id.song}`;
+      obj.song_id.image = `${process.env.MEDIA_PATH + "karaoke/"}${item.song_id.image}`
+      return obj;
+    });
+    if (categoryData.length) {
+      response.status = 200;
+      response.body = categoryData;
+    }else {
+      response.status = 203;
+      response.body = [];
+      response.message = 'No songs found, please record something.';
+    }
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: fetchAllcategories", error);
+    response.message = ["401", "406"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+exports.deleteKaraoke = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    const { user_id, user_role, accessPermission } = req.body;
+
+    let findData = await songService.userKaraokeDetails({id: req.params.id});
+    if (findData && (findData.user_id == user_id)) {
+      if (fs.existsSync('./uploads/user_karaoke/'+findData.karaoke_file)) {
+        fs.unlinkSync('./uploads/user_karaoke/'+findData.karaoke_file);
+      }
+      if (fs.existsSync('./uploads/user_karaoke/'+findData.output_file)) {
+        fs.unlinkSync('./uploads/user_karaoke/'+findData.output_file);
+      }
+      
+      await songService.deleteUserKaraoke(req.params.id);
+      response.message = constants.genericMessage.DATA_DELETED;
+      response.status = 200;
+    } else throw new ErrorHandler(`${constants.genericMessage.DATA_NOT_FOUND}`, "406")._errorManager();
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: deleteCategory", error.message);
+    response.message = ["401", "406"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+
+exports.getUserLibrary = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    const { user_id, user_role, accessPermission } = req.body;
+
+    let search = {is_deleted:'n',user_id:user_id};
+    let karaokeData = await userService.getAllUserKaraoke(search,true);
+
+    var playlist = await userService.fetchPlaylist({ id: req.body.user_id,count:true })
+
+    response.status = 200;
+    response.body.karaoke_count = karaokeData;
+    response.body.karaoke_image = `${process.env.MEDIA_PATH}`+"karaoke_background.jpg";
+    response.body.playlist_count = playlist;
+    response.body.playlist_image = `${process.env.MEDIA_PATH}`+"list-icon.png";
+
+    response.body.download_count = 0;
+    response.body.download_image = `${process.env.MEDIA_PATH}`+"download_icon.png";
+
+
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: fetchAllcategories", error);
+    response.message = ["401", "406"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+
+module.exports.getUser = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+   const responseFromService = await userService.getUserById({ id: req.body.user_id });
+   let profile_pic = process.env.MEDIA_PATH+"deault_image.jpg";
+
+   if(responseFromService.profile_pic && responseFromService.profile_pic!=""){
+    if(responseFromService.profile_pic.includes('http')){
+      profile_pic = responseFromService.profile_pic;
+    }else{
+      profile_pic = process.env.MEDIA_PATH+"profile_pic/"+responseFromService.profile_pic;
+    }
+   }
+   responseFromService.profile_pic = profile_pic;
+
+   //New Notification
+   let findNotificationWatch = await userService.findNotificationWatch({ user_id: req.body.user_id, status:'active' });
+   responseFromService.new_notification_count = findNotificationWatch.length;
+  response.status = 200;
+  response.message = constants.genericMessage.DATA_FOUND;
+    
+
+    response.body = responseFromService;
+  } catch (error) {
+    console.log("Something went wrong: Controller: getUser", error);
+    response.message = error.message;
+  }
+  return res.status(response.status).send(response);
+};
+
+exports.getAllPackage = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    const { user_id, user_role, accessPermission } = req.body;
+
+    let search = {is_deleted:'n',status:'active'};
+    let packageData = await userService.getAllPackage(search);
+    if(packageData.length){
+      response.status = 200;
+      response.body = packageData;
+    }else{
+      response.status = 203;
+      response.body = [];
+      response.message = `${constants.genericMessage.DATA_NOT_FOUND}`;
+    }
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: getAllPackage", error);
+    response.message = ["401", "406"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+
+exports.insertSubscription = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    if (!req.body.user_id) throw new ErrorHandler(`You are not authorised!!!`, "400")._errorManager();
+
+    console.log(req.body.package_id);
+    
+
+    let findPackage = await userService.getPackageById({id:req.body.package_id});
+    if(findPackage){
+      const getUserDetails = await userService.getUserById({ id: req.body.user_id });
+      var formatedDate = new Date();
+      if(getUserDetails.subscription_status == 'active'){
+        formatedDate = getUserDetails.subscription_expiry_date;
+      }
+      
+      formatedDate = moment(formatedDate).format("YYYY-MM-DD HH:mm:ss");
+      var subscription_end_date = moment(formatedDate).add(parseInt(findPackage.validity), "days").format("YYYY-MM-DD HH:mm:ss");
+      let updateInfo = {
+        subscription_expiry_date:subscription_end_date,
+        subscription_status : 'active',
+        subscription_package : req.body.package_id
+      };
+      await userService.updateProfile({ id:req.body.user_id,updateInfo:updateInfo });
+
+      let data = {
+        user_id: req.body.user_id,
+        package_id:req.body.package_id,
+        price:findPackage.price,
+        validity:findPackage.validity
+      };
+      await userService.insertUserSubscriptionLog(data);
+      response.status = 200;
+      response.message = "Subscribed";
+
+    }else{
+      throw new ErrorHandler(`Invalid Package ID!!!`, "400")._errorManager();
+    }
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: insertKaraoke", error.message);
+    response.message = ["401", "406", "400"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+exports.insertSongPlay = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    if (!req.body.user_id) throw new ErrorHandler(`You are not authorised!!!`, "400")._errorManager();
+
+    let findSong = await songService.getSongsById({id:req.body.song_id});
+    //console.log(findSong.playCount);
+
+    if(findSong && findSong.id){
+       let prev_play_count = parseInt(findSong.playCount);
+       prev_play_count++;
+       let updateInfo = {
+        playCount:prev_play_count,
+      };
+      console.log(updateInfo);
+
+      await songService.updateSongs({ id: req.body.song_id, updateInfo: updateInfo });
+
+      let data = {
+        user_id: req.body.user_id,
+        song_id:req.body.song_id
+      };
+      await userService.insertUserPlayLog(data);
+      response.status = 200;
+      response.message = constants.genericMessage.DATA_INSERTED;
+
+    }else{
+      throw new ErrorHandler(`Invalid Song ID!!!`, "400")._errorManager();
+    }
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: insertKaraoke", error.message);
+    response.message = ["401", "406", "400"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+module.exports.logout = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+
+    await userService.logoutUser(req.body.user_id);
+    response.status = 200;
+    response.message = constants.userMessage.LOGOUT_SUCCESS;
+    response.body = {};
+    return res.status(response.status).send(response);
+  } catch (error) {
+    console.log("Something went wrong: Controller: logout", error);
+    response.message = error.message;
+    return res.status(400).send(response);
+  }
+};
+exports.inititateTransaction = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    if (!req.body.user_id) throw new ErrorHandler(`You are not authorised!!!`, "400")._errorManager();
+    if (!req.body.source) req.body.source = "web";
+    
+    const userDetails = await userService.getUserById({ id: req.body.user_id });
+    console.log(req.body.package_id);
+    
+    function makeid(length) {
+      var result           = '';
+      var characters       = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+      var charactersLength = characters.length;
+      for ( var i = 0; i < length; i++ ) {
+        result += characters.charAt(Math.floor(Math.random() * charactersLength));
+     }
+     return result;
+    }
+    let findPackage = await userService.getPackageById({id:req.body.package_id});
+
+    let StoreID = process.env.STORE_ID;
+    let StorePassword = process.env.STORE_PASSWORD;
+    let sdktype='LIVE';
+    //let sdktype='SSLCSdkType.LIVE';
+
+    // if(req.body.source == 'android'){
+    //   StoreID = process.env.STORE_ID_SANDBOX;
+    //   StorePassword = process.env.STORE_PASSWORD_SANDBOX;
+    //   sdktype = "TESTBOX";
+    // }
+
+    if(findPackage){
+      let order_id = makeid(10).toUpperCase();
+      let requestData = {
+        'store_id': StoreID,
+        'store_passwd': StorePassword,
+        'total_amount': findPackage.price,
+        'currency': 'BDT',
+        'tran_id': order_id,
+        'success_url': "https://api.dhakarecord.online/api/v1/user/handlesslresponse",
+        'fail_url': "https://api.dhakarecord.online/api/v1/user/handlesslresponse",
+        'cancel_url': "https://api.dhakarecord.online/api/v1/user/handlesslresponse",
+        'cus_name': userDetails.name,
+        'cus_email': userDetails.email?userDetails.email:'dhakarecordmusic@gmail.com',
+        'cus_add1': 'Dhaka',
+        'cus_add2': 'Dhaka',
+        'cus_city': 'Dhaka',
+        'cus_state': 'Dhaka',
+        'cus_postcode': '1000',
+        'cus_country': userDetails.country,
+        'cus_phone': userDetails.mobile,
+        'cus_fax': userDetails.mobile,
+        'ship_name': userDetails.name,
+        'ship_add1 ': 'Dhaka',
+        'ship_add2': 'Dhaka',
+        'ship_city': 'Dhaka',
+        'ship_state': 'Dhaka',
+        'ship_postcode': '1000',
+        'ship_country': 'Bangladesh',
+        'shipping_method': 'NO',
+        'product_name': 'DHAKARECORD_SUBSCRIPTION',
+        'product_category': req.body.package_id,
+        'product_profile': 'non-physical-goods' 
+      }
+
+      let post_data = qs.stringify(requestData);
+
+      var writer_data = fs.createWriteStream("uploads/request.json");
+      writer_data.write(JSON.stringify(requestData));
+
+      //https://sandbox.sslcommerz.com/gwprocess/v4/api.php
+
+      var config = {
+        method: 'post',
+        url: 'https://securepay.sslcommerz.com/gwprocess/v4/api.php',
+        headers: { 
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        data : post_data
+      };
+
+      await userService.insertTransactionLogModel({
+        user_id:req.body.user_id,
+        package_id:req.body.package_id,
+        price:findPackage.price,
+        tran_id:order_id,
+        status:"initiated",
+        source: req.body.source?req.body.source:"web"
+      });
+      let payment_url = "";
+      if(req.body.source == "android"){
+        response.status = 200;
+        response.message = "Transaction Initialized";
+        response.body = {
+          'store_id': StoreID,
+          'store_passwd': StorePassword,
+          'total_amount': findPackage.price,
+          'currency': 'BDT',
+          'tran_id': order_id,
+          'product_category': req.body.package_id,
+          'sdktype':sdktype
+        }
+      }else{
+        await axios(config)
+        .then((response)=> {
+          //console.log(response);
+          payment_url = response.data.GatewayPageURL;
+        })
+        .catch( (error)=> {
+          response.status = 400;
+          response.message = "Payment URL generation Failed";
+          response.body = error;
+        });
+
+        response.status = 200;
+        response.message = "Payment URL generated";
+        response.body = payment_url
+      }
+      
+
+    }else{
+      throw new ErrorHandler(`Invalid Package ID!!!`, "400")._errorManager();
+    }
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: insertKaraoke", error.message);
+    response.message = ["401", "406", "400"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+
+
+exports.getPlayedSongList = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+   
+    let favouriteData = await userService.findSongPlayLog({user_id:req.body.user_id});
+    let favouriteList = [];
+    if (favouriteData.length) {
+      for (let i in favouriteData) {
+        if (favouriteData[i].song_id.thumb_img) {
+          favouriteData[i].song_id.thumb_img = process.env.MEDIA_PATH + "songs/thumb_image/" + favouriteData[i].song_id.thumb_img;
+        }
+        if (favouriteData[i].song_id.media_file) {
+          favouriteData[i].song_id.media_file = process.env.MEDIA_PATH + "songs/" + favouriteData[i].song_id.media_file;
+        }
+        let songArtist = favouriteData[i].song_id.artists;
+        let artist_name = [];
+        for(artist of songArtist){
+          let getArtist = await artistService.getArtistById({id:artist});
+          artist_name.push(getArtist.title);
+        }
+
+        favouriteList.push({
+          "id":favouriteData[i].id,
+          "song_id":favouriteData[i].song_id.id,
+          "playCount": favouriteData[i].song_id.playCount,
+          "downloadCount": favouriteData[i].song_id.downloadCount,
+          "title": favouriteData[i].song_id.title,
+          "description": favouriteData[i].song_id.description,
+          "thumb_img": favouriteData[i].song_id.thumb_img,
+          "media_file": favouriteData[i].song_id.media_file,
+          "artist":artist_name.toString(),
+          "duration": favouriteData[i].duration,
+          "title2": slugify(favouriteData[i].title)
+        })
+      }
+
+      response.status = 200;
+      response.body = favouriteList;
+    }else {
+      response.status = 203;
+      response.message = `NO DATA FOUND`;
+      response.body = [];
+    }
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: getFavouriteList", error);
+    response.message = ["401", "406"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+
+exports.validateGiftcard = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    const { user_id, user_role, accessPermission } = req.body;
+
+    let search = {is_deleted:'n',status:'active',coupon_code:req.body.coupon_code };
+    let findData = await couponService.searchCoupon(search);
+    if(findData){
+      let current_date = new Date().getTime();
+      let voucher_start_date = new Date(findData.start_date).toISOString().slice(0, 10);
+      let voucher_start_time = new Date(voucher_start_date).getTime();
+      if(current_date < voucher_start_time){
+        response.status = 203;
+        response.message = 'Not a valid giftcard';
+      }else{
+        response.status = 200;
+        response.body = findData;
+      }
+     
+    }else{
+      response.status = 203;
+      response.message = 'Not a valid giftcard';
+    }
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: validateGiftcard", error);
+    response.message = ["401", "406"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+
+
+exports.otpTest = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    const getData = async (trackingConfig) => {
+      //console.log(trackingConfig);
+      try {
+        const response = await axios(trackingConfig);
+
+        let res = { status: true, data: response.data.message };
+        return res;
+      } catch (error) {
+        var message = "";
+        for (let i in error.response.data) {
+          message += (message ? ", " : "") + JSON.stringify(error.response.data[i]);
+        }
+        let res = { status: false, data: message };
+        return res;
+      }
+    };
+      // let post_data = {
+      //   "api_token": "npy5glsq-jmal0fg5-79rn7mxm-pavwwslu-730osb9o",
+      //   "sid": "DHLRBRAND",
+      //   "msisdn": "8801716370612",
+      //   "sms": "Test Message from Dharecord",
+      //   "csms_id": Date.now()
+      // };
+      // var config = {
+      //   method: 'post',
+      //   url: 'https://smsplus.sslwireless.com/api/v3/send-sms',
+      //   data : post_data
+      // };
+      // console.log(post_data);
+      // let responseData = await getData(config)
+
+      let mailTransporter = nodemailer.createTransport({
+          service: 'gmail',
+          auth: {
+              user: 'dhakarecordmusic@gmail.com',
+              pass: 'dxevnglngsjmnrfa'
+          }
+      });
+      
+      let mailDetails = {
+          from: 'support@dhakarecord.online',
+          to: 'prasenjit@notionalsystems.com',
+          subject: 'Dhakarecord OTP to login',
+          html: '<table style="width: 100%; border-collapse: collapse ; text-align: center;"><thead><tr style="background-color: #e9b5b5;"><td style="border: 2px solid #a56666; font-size: 20px; font-weight: 200; color: #000;">Date</td><td style="border: 2px solid #a56666; font-size: 20px; font-weight: 200; color: #000;">OrderNumber</td><td style="border: 2px solid #a56666; font-size: 20px; font-weight: 200; color: #000;">Placedunits</td><td style="border: 2px solid #a56666; font-size: 20px; font-weight: 200; color: #000;">PlacedMtrs</td><td style="border: 2px solid #a56666; font-size: 20px; font-weight: 200; color: #000;">PlacedValue</td><td style="border: 2px solid #a56666; font-size: 20px; font-weight: 200; color: #000;">Remarks</td></tr></thead>'
+      };
+      
+      mailTransporter.sendMail(mailDetails, function(err, data) {
+          if(err) {
+              console.log('Error Occurs');
+          } else {
+              console.log('Email sent successfully');
+          }
+      });
+
+      
+
+      response.status = 200;
+      //response.message = "Payment URL generated";
+      //response.body = responseData
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: insertKaraoke", error.message);
+    response.message = ["401", "406", "400"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+
+module.exports.handlesslresponse = async (req, res) => {
+  try {
+      let response = { ...constants.defaultServerResponse };
+      // var writer_data = fs.createWriteStream("uploads/response.json");
+      // writer_data.write(JSON.stringify(req.body));
+      let source = ""
+     
+      function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+      let findTransaction = await userService.findTrnasactionLogModel({tran_id:req.body.tran_id});
+      console.log(findTransaction);
+
+      if(findTransaction){
+
+        
+        source = findTransaction.source?findTransaction.source:"";
+
+        // let store_id = (source=='android')?process.env.STORE_ID_SANDBOX:process.env.STORE_ID;
+        // let store_password = (source=='android')?process.env.STORE_PASSWORD_SANDBOX:process.env.STORE_PASSWORD;
+        // let url = (source=='android')?"https://sandbox.sslcommerz.com/validator/api/validationserverAPI.php":"https://securepay.sslcommerz.com/validator/api/validationserverAPI.php"; 
+
+        let store_id = process.env.STORE_ID;
+        let store_password = process.env.STORE_PASSWORD;
+        let url = "https://securepay.sslcommerz.com/validator/api/validationserverAPI.php"; 
+
+        //await sleep(1000);
+        //Perform Futher Checking
+        
+        //https://sandbox.sslcommerz.com/validator/api/validationserverAPI.php
+
+        let payment_response;
+        let config = {
+          method: 'get',
+          maxBodyLength: Infinity,
+          url: url+'?val_id='+req.body.val_id+'&store_id='+store_id+'&store_passwd='+store_password+'&format=json',
+          headers: { }
+        };
+        
+        await axios.request(config)
+        .then((response) => {
+          console.log(response.data);
+          payment_response = response.data
+        })
+        .catch((error) => {
+          console.log(error);
+        });
+
+        // var writer_data = fs.createWriteStream("uploads/validate_api_response.json");
+        // writer_data.write(JSON.stringify(payment_response));
+
+        if(payment_response.status == 'VALID' || payment_response.status == 'VALIDATED'){
+          // Check AMount and update in DB
+          if(parseFloat(payment_response.amount).toFixed(2) == parseFloat(findTransaction.price).toFixed(2)){
+
+            if(!findTransaction.validated){
+              let updateData = {
+                transaction_result:(source == 'web')?req.body:payment_response,
+                status:'success',
+                validated:true
+              }
+              await userService.updateTrnasactionLog({id:findTransaction.id,updateData:updateData});
+              let findPackage = await userService.getPackageById({id:findTransaction.package_id});
+              const getUserDetails = await userService.getUserById({ id: findTransaction.user_id });
+              var formatedDate = new Date();
+              if(getUserDetails.subscription_status == 'active'){
+                formatedDate = getUserDetails.subscription_expiry_date;
+              }
+              
+              formatedDate = moment(formatedDate).format("YYYY-MM-DD HH:mm:ss");
+              var subscription_end_date = moment(formatedDate).add(parseInt(findPackage.validity), "days").format("YYYY-MM-DD HH:mm:ss");
+              let updateInfo = {
+                subscription_expiry_date:subscription_end_date,
+                subscription_status : 'active',
+                subscription_package : findTransaction.package_id
+              };
+              await userService.updateProfile({ id:findTransaction.user_id,updateInfo:updateInfo });
+
+              let data = {
+                user_id: findTransaction.user_id,
+                package_id:findTransaction.package_id,
+                price:findPackage.price,
+                validity:findPackage.validity
+              };
+              await userService.insertUserSubscriptionLog(data);
+
+              if(source == 'web'){
+                res.writeHead(301,
+                  {Location: 'http://dhakarecord.online/#/main/subscription-process?order_id='+req.body.tran_id+"&payment_status=success&amount="+findTransaction.price}
+                );
+              }else{
+                response.status = 200;
+                response.message = "Subscribed";
+                let profileDetails = await userService.getUserById({ id: findTransaction.user_id });
+                if (profileDetails.profile_pic) {
+                  let profile_pic = profileDetails.profile_pic;
+                  if(!profile_pic.includes('://')){
+                    profileDetails.profile_pic = process.env.MEDIA_PATH + "profile_pic/" + profile_pic;
+                  }
+                  
+                }
+                response.body = profileDetails;
+              }
+            }else{
+              response.status = 200;
+              response.message = "Subscribed";
+              let profileDetails = await userService.getUserById({ id: findTransaction.user_id });
+              if (profileDetails.profile_pic) {
+              let profile_pic = profileDetails.profile_pic;
+                if(!profile_pic.includes('://')){
+                    profileDetails.profile_pic = process.env.MEDIA_PATH + "profile_pic/" + profile_pic;
+                }
+                  
+              }
+              response.body = profileDetails;
+            }
+          }else{
+            let updateData = {
+              transaction_result:req.body,
+              status:'failed'
+            }
+            await userService.updateTrnasactionLog({id:findTransaction.id,updateData:updateData});
+            if(source == 'web'){
+              res.writeHead(301,
+                {Location: 'http://dhakarecord.online/#/main/subscription-process?order_id='+req.body.tran_id+"&payment_status=failed&amount="+findTransaction.price}
+              );
+            }else{
+              response.status = 201;
+              response.message = "Invalid Transaction";
+            }
+
+           
+          }
+
+        }else{
+          let updateData = {
+            transaction_result:(source == 'web')?req.body:payment_response,
+            status:'failed'
+          }
+          await userService.updateTrnasactionLog({id:findTransaction.id,updateData:updateData});
+          if(source == 'web'){
+            res.writeHead(301,
+              {Location: 'http://dhakarecord.online/#/main/subscription-process?order_id='+req.body.tran_id+"&payment_status=failed&amount="+findTransaction.price}
+            );
+          }else{
+            response.status = 201;
+            response.message = "Invalid Transaction";
+          }
+        }
+       
+      }else{
+        let updateData = {
+          transaction_result:req.body,
+          status:'failed'
+        }
+        await userService.updateTrnasactionLog({id:findTransaction.id,updateData:updateData});
+        if(source == 'web'){
+          res.writeHead(301,
+            {Location: 'http://dhakarecord.online/#/main/subscription-process?order_id='+req.body.tran_id+"&payment_status=failed&amount=0"}
+          );
+        }else{
+          response.status = 201;
+          response.message = "Invalid Transaction";
+        }
+       
+      }
+      if(source == 'web'){
+        res.end();
+      }else{
+        return res.status(response.status).send(response);
+      }
+
+  } catch (error) {
+      console.log('Something went wrong: Controller: handleCashFreeResponse', error);
+      res.writeHead(301,
+        {Location: 'http://dhakarecord.online/#/main/subscription-process?order_id='+req.body.tran_id+"&payment_status=failed"}
+      );
+      res.end();
+    }
+}
+
+module.exports.deleteAccountRequest = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    let search = {};
+    let findUser = await userService.findAccount({email_mobile: req.body.email_mobile});
+    if(findUser){
+      let findRequest = await userService.findAccountDeleteRequest({user_id: findUser.id, status : "1"});
+      if(findRequest.length){
+        response.status = 202;
+        response.message = constants.userMessage.ACCOUNT_DELETED_REQUEST_EXISTS;
+        response.body = {};
+      }else{
+        let data = {
+          user_id: findUser.id,
+          status:true
+        }
+        await userService.insertAccountDeleteRequest(data);
+        response.status = 200;
+        response.message = constants.userMessage.ACCOUNT_DELETED_REQUEST;
+        response.body = {};
+      }
+      
+    }else{
+      response.status = 202;
+      response.message = constants.userMessage.NO_ACCOUNT;
+      response.body = {};
+    }
+
+
+    //await userService.logoutUser(req.body.user_id);
+  
+  } catch (error) {
+    console.log("Something went wrong: Controller: logout", error);
+    response.message = error.message;
+    response.status = 400;
+  }
+  return res.status(response.status).send(response);
+};
+
+module.exports.deleteAccount = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    let findUser = await userService.getUserById({id:req.body.user_id});
+    if(findUser){
+      let findRequest = await userService.findAccountDeleteRequest({user_id: req.body.user_id, status : "1"});
+      if(findRequest.length){
+        response.status = 202;
+        response.message = constants.userMessage.ACCOUNT_DELETED_REQUEST_EXISTS;
+        response.body = {};
+      }else{
+        let data = {
+          user_id: req.body.user_id,
+          status:true
+        }
+        await userService.insertAccountDeleteRequest(data);
+        response.status = 200;
+        response.message = constants.userMessage.ACCOUNT_DELETED_REQUEST;
+        response.body = {};
+      }
+    }else{
+      response.status = 202;
+      response.message = constants.userMessage.USER_NOT_FOUND;
+      response.body = {};
+    }
+
+    //await userService.logoutUser(req.body.user_id);
+  
+  } catch (error) {
+    console.log("Something went wrong: Controller: deleteAccount", error);
+    response.message = error.message;
+    response.status = 400;
+  }
+  return res.status(response.status).send(response);
+};
+module.exports.unsubscribe = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    let findUser = await userService.getUserById({id:req.body.user_id});
+    if(findUser){
+      let customerData = {
+        subscription_status:"inactive",
+        subscription_package:"",
+        subscription_expiry_date: new Date(),
+        unsubscribe_by:"user",
+      }
+      let profileDetails = await userService.updateProfile({id:req.body.user_id, updateInfo: customerData});
+
+      response.status = 200;
+      response.message = constants.userMessage.UNSUBSCRIBE;
+      if (profileDetails.profile_pic) {
+            let profile_pic = profileDetails.profile_pic;
+            if(!profile_pic.includes('://')){
+                    profileDetails.profile_pic = process.env.MEDIA_PATH + "profile_pic/" + profile_pic;
+            }
+                  
+      }
+      response.body = profileDetails;
+      
+    }else{
+        response.status = 202;
+        response.message = constants.userMessage.USER_NOT_FOUND;
+        response.body = {};
+    }
+
+    //await userService.logoutUser(req.body.user_id);
+  
+  } catch (error) {
+    console.log("Something went wrong: Controller: deleteAccount", error);
+    response.message = error.message;
+    response.status = 400;
+  }
+  return res.status(response.status).send(response);
+};
+module.exports.forgotPassword = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    let search = {};
+    let findUser = await userService.findAccount({email_mobile: req.body.email});
+    if(findUser){
+      function makeid(length) {
+          let result = '';
+          const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+          const charactersLength = characters.length;
+          let counter = 0;
+          while (counter < length) {
+            result += characters.charAt(Math.floor(Math.random() * charactersLength));
+            counter += 1;
+          }
+          return result;
+      }
+
+      let token=makeid(25);
+      let customerData = {
+        reset_token:token
+      }
+      await userService.updateProfile({id:findUser.id, updateInfo: customerData});
+
+      let mailTransporter = nodemailer.createTransport({
+          service: 'gmail',
+          auth: {
+              user: 'dhakarecordmusic@gmail.com',
+              pass: 'dxevnglngsjmnrfa'
+          }
+      });
+      
+      let mailDetails = {
+          from: 'support@dhakarecord.online',
+          to: req.body.email,
+          subject: 'Dhakarecord Reset Password Request',
+          html: 'Dear Customer, <br><br> Someone has requested to change your password. You can do this through the link below. <p style=font-size:12px; line-height:16px; margin:0;"><a href="http://dhakarecord.online/#/auth/reset-password?auth='+token+'">Change my password</a></p><p style="font-size:12px; line-height:16px; margin:0;">If you did not request this, please ignore this email.</p><p style="font-size:12px; line-height:16px; margin:0;">Your password would not change until you access the link above and create a new one.</p>'
+      };
+      
+      mailTransporter.sendMail(mailDetails, function(err, data) {
+          if(err) {
+              console.log('Error Occurs');
+          } else {
+              console.log('Email sent successfully');
+          }
+      });
+      response.status = 200;
+      response.message = "Please check your email for reset password.";
+      response.body = {};
+      
+    }else{
+      response.status = 202;
+      response.message = constants.userMessage.NO_ACCOUNT;
+      response.body = {};
+    }
+
+
+    //await userService.logoutUser(req.body.user_id);
+  
+  } catch (error) {
+    console.log("Something went wrong: Controller: logout", error);
+    response.message = error.message;
+    response.status = 400;
+  }
+  return res.status(response.status).send(response);
+};
+module.exports.resetPassword = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    let search = {};
+    let findUser = await userService.findAccount({reset_token: req.body.token});
+    if(findUser){
+      const saltRounds = 12;
+      let password = await new Promise((resolve, reject) => {
+        bcrypt.hash(req.body.password, saltRounds, function(err, hash) {
+          if (err) reject(err)
+          resolve(hash)
+        });
+      })
+
+      let customerData = {
+        password:password,
+        reset_token:""
+      }
+      await userService.updateProfile({id:findUser.id, updateInfo: customerData});
+     
+      response.status = 200;
+      response.message = constants.userMessage.ACCOUNT_UPDATED;
+      response.body = {};
+      
+    }else{
+      response.status = 202;
+      response.message = constants.userMessage.INVALID_RESET_REQUEST;
+      response.body = {};
+    }
+
+
+    //await userService.logoutUser(req.body.user_id);
+  
+  } catch (error) {
+    console.log("Something went wrong: Controller: logout", error);
+    response.message = error.message;
+    response.status = 400;
+  }
+  return res.status(response.status).send(response);
+};
+exports.emailOTP = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+      const responseFromService = await userService.loginByOtpEmail(req.body);
+      if (responseFromService && responseFromService.status) {
+        let mailTransporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+                user: 'dhakarecordmusic@gmail.com',
+                pass: 'dxevnglngsjmnrfa'
+            }
+        });
+        
+        let mailDetails = {
+            from: 'support@dhakarecord.online',
+            to: req.body.email,
+            subject: 'Dhakarecord OTP to login',
+            html: "Dear Customer, <br><br> Use <b>"+responseFromService.data.otp_code+"</b> as the OTP to validate your Dhakarecord account."
+        };
+        
+        mailTransporter.sendMail(mailDetails, function(err, data) {
+            if(err) {
+                console.log('Error Occurs');
+            } else {
+                console.log('Email sent successfully');
+            }
+        });
+      }
+      response.status = 200;
+      response.message = "OTP Generated";
+      //response.body = responseData
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: insertKaraoke", error.message);
+    response.message = ["401", "406", "400"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+module.exports.otpValidationEmailMobile = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    const responseFromService = await userService.otpValidationEmailMobile(req.body);
+    if (responseFromService) {
+      if(responseFromService.status){
+        response.status = 200;
+        response.message = constants.userMessage.VALID_OTP;
+        response.body = responseFromService;
+      }else{
+        response.status = 202;
+        response.message = constants.userMessage.INVALID_OTP;
+        response.body = responseFromService;
+      }
+    } else {
+      response.status = 203;
+      response.message = constants.userMessage.INVALID_OTP;
+    }
+  } catch (error) {
+    response.status = 400;
+    console.log("Something went wrong: Controller: login", error);
+    response.message = error.message;
+  }
+  return res.status(response.status).send(response);
+};
+exports.fetchNotificationlist = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+
+    let fetchUserDetails = await userService.getUserById({id:req.body.user_id})
+    if(fetchUserDetails){
+      let search = {status:'active'};
+      if(fetchUserDetails.subscription_status == 'inactive'){
+        search['notification_sub_type'] = 'Not Subscribed';
+      }else if(fetchUserDetails.subscription_status == 'expired'){
+        search['notification_sub_type'] = 'Expired';
+      }else{
+        search['notification_sub_type'] = 'About to Expire';
+      }
+
+      let notification_data = [];
+      var notificationlistSubscription = await userService.fetcNotificationlist({search: search})
+
+      const CurrentDay = moment().format('YYYY-MM-DD');
+
+     
+
+      for (let i in notificationlistSubscription) {
+        notificationlistSubscription[i].img = `${process.env.MEDIA_PATH + "/notification/"}${notificationlistSubscription[i].img}`;
+        notificationlistSubscription[i].banner_image = `${process.env.MEDIA_PATH + "/notification/"}${notificationlistSubscription[i].banner_image}`;
+        //console.log(notificationlistSubscription[i]);
+        console.log(notificationlistSubscription[i].notification_sub_type);
+
+        if(notificationlistSubscription[i].notification_sub_type == 'About to Expire'){
+          if(fetchUserDetails.subscription_expiry_date){
+            let present_date = new Date();
+            let expiry_date = new Date(fetchUserDetails.subscription_expiry_date);
+            let Difference_In_Time = expiry_date.getTime() - present_date.getTime();
+            let Difference_In_Days = Math.round(Difference_In_Time / (1000 * 3600 * 24));
+            console.log("Difference_In_Days",Difference_In_Days);
+            if(parseInt(notificationlistSubscription[i].expiry_days)>=Difference_In_Days){
+              let findNotificationWatch = await userService.findNotificationWatch({ user_id: req.body.user_id, notification_id: notificationlistSubscription[i].id, notify_date: { $gte : new Date(CurrentDay) } });
+              if(!findNotificationWatch.length){
+                let notification_watch_log = {
+                  user_id:req.body.user_id,
+                  notification_id : notificationlistSubscription[i].id,
+                  status : 'active'
+                }
+                notification_data.push(notificationlistSubscription[i]);
+                await userService.insertNotificationWatch(notification_watch_log);
+              }
+              
+            }
+          }
+        }else{
+          //
+          let findNotificationWatch = await userService.findNotificationWatch({ user_id: req.body.user_id, notification_id: notificationlistSubscription[i].id, notify_date: { $gte : new Date(CurrentDay) } });
+          console.log("findNotificationWatch",findNotificationWatch);
+
+          console.log("length",findNotificationWatch.length);
+
+          if(!findNotificationWatch.length){
+            //Check no of Count of currrent month
+            const firstdate = moment().startOf('month').format('YYYY-MM-DD');
+            let currentMonthNotification = await userService.findNotificationWatch({ user_id: req.body.user_id, notification_id: notificationlistSubscription[i].id, notify_date: { $gte : new Date(firstdate) } });
+            if(currentMonthNotification.length<7){
+              let notification_watch_log = {
+                user_id:req.body.user_id,
+                notification_id : notificationlistSubscription[i].id,
+                status : 'active'
+              }
+              await userService.insertNotificationWatch(notification_watch_log);
+              notification_data.push(notificationlistSubscription[i]);
+            }
+          }
+        }
+       
+
+
+       
+
+        // let notification_watch_log = {
+        //   user_id:req.body.user_id,
+        //   notification_id : notificationlistSubscription[i].id
+        // }
+
+        // let findNotificationWatch = await userService.findNotificationWatch({ user_id: req.body.user_id, notification_id: notificationlist[i].id });
+        
+        // if(!findNotificationWatch.length){
+        //   notification_data.push(notificationlistSubscription[i]);
+          
+        // }else{
+        //   notificationlist[i].view_status = false;
+        // }
+
+       
+       
+
+      }
+
+      //console.log(notification_data);
+
+      var notificationlistGeneric = await userService.fetcNotificationlist({search: {status:'active', notification_type: 'others', start_date: {$lte: new Date()},end_date: {$gte: new Date()}}})
+
+      for (let i in notificationlistGeneric) {
+        //let findNotificationWatch = await userService.findNotificationWatch({ user_id: req.body.user_id, notification_id: notificationlist[i].id });
+        notificationlistGeneric[i].img = `${process.env.MEDIA_PATH + "/notification/"}${notificationlistGeneric[i].img}`;
+        notificationlistGeneric[i].banner_image = `${process.env.MEDIA_PATH + "/notification/"}${notificationlistGeneric[i].banner_image}`;
+        let notification_watch_log = {
+          user_id:req.body.user_id,
+          notification_id : notificationlistGeneric[i].id,
+          status : 'active'
+        }
+        //
+        let findNotificationWatch = await userService.findNotificationWatch({ user_id: req.body.user_id, notification_id: notificationlistGeneric[i].id, notify_date: { $gte : new Date(CurrentDay)} });
+        if(!findNotificationWatch.length){
+          await userService.insertNotificationWatch(notification_watch_log);
+          if(notification_data.length<=2){
+            notification_data.push(notificationlistGeneric[i]);
+          }
+        }
+      }
+      if (notification_data.length) {
+        response.status = 200;
+        response.body = notification_data;
+      } else {
+        response.status = 203;
+        response.message = `NO DATA FOUND`;
+        response.body = [];
+      }
+    }else {
+      response.status = 203;
+      response.message = `NO DATA FOUND`;
+      response.body = [];
+    }
+
+
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: fetchNotificationlist", error);
+    response.message = ["401", "406"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+exports.fetchAllNotificationlist = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+
+    let findNotificationWatch = await userService.findNotificationWatch({ user_id: req.body.user_id });
+    let notifyobj = [];
+    //New Notification
+    let findNotification = await userService.findNotificationWatch({ user_id: req.body.user_id, status:'active' });
+    response.new_notification_count = findNotification.length;
+
+    if(findNotificationWatch.length){
+      for (let item of findNotificationWatch) {
+        if(item.notification_id){
+          let data = {
+            id: item.id,
+            notification_id: item.notification_id.id,
+            title: item.notification_id.title,
+            img: `${process.env.MEDIA_PATH + "/notification/"}${item.notification_id.img}`,
+            banner_image: `${process.env.MEDIA_PATH + "/notification/"}${item.notification_id.banner_image}`,
+            notification_type: item.notification_id.notification_type,
+            notification_sub_type: item.notification_id.notification_sub_type,
+            createdAt: item.createdAt,
+          }
+          notifyobj.push(data);
+        }
+        
+      }
+      response.status = 200;
+      response.message = `Data Fetched`;
+      response.body = notifyobj
+    }else {
+      response.status = 203;
+      response.message = `NO DATA FOUND`;
+      response.body = [];
+    }
+
+
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: fetchNotificationlist", error);
+    response.message = ["401", "406"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+
+exports.subscription_exired = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    
+    let findActiveSubscription = await userService.findAllCustomer({subscription_status:'active', subscription_expiry_date: { $lt:new Date() }});
+    for(item of findActiveSubscription){
+      let updateInfo = {
+        subscription_status : 'expired',
+      };
+      await userService.updateProfile({ id:item.id,updateInfo:updateInfo });
+    }
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: insertKaraoke", error.message);
+    response.message = ["401", "406", "400"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};
+
+exports.notificationView = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+
+    await userService.updateNotificationWatch({findInfo: {_id:req.params.id, user_id: req.body.user_id}, updateInfo : { status:'viewed' }});
+
+    response.status = 200;
+    response.message = `Data Upodated`;
+
+
+  } catch (error) {
+    response.status = error.status ? error.status : "500";
+    console.log("Something went wrong: Controller: fetchNotificationlist", error);
+    response.message = ["401", "406"].includes(error.status) ? error.message : "Sorry, an unexpected error has occurred";
+  }
+  return res.status(response.status).send(response);
+};

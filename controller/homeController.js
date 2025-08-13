@@ -1,0 +1,883 @@
+const constants = require("../constants");
+const artistService = require("../service/artistService");
+const actorService = require("../service/actorService");
+const categoryService = require('../service/categoryService');
+const songService = require('../service/songService');
+const podcastService = require('../service/podcastService');
+const playlistService = require('../service/playlistService');
+const userService = require('../service/userService');
+const filmService = require('../service/filmService');
+const homeSectionLibraryService = require('../service/homeSectionLibrary');
+const slugify = require('slugify');
+
+module.exports.getAllHomes = async (req, res) => {
+    let response = { ...constants.defaultServerResponse };
+    try {
+      function shuffle(array) {
+        var currentIndex = array.length, temporaryValue, randomIndex;
+      
+        // While there remain elements to shuffle...
+        while (0 !== currentIndex) {
+      
+          // Pick a remaining element...
+          randomIndex = Math.floor(Math.random() * currentIndex);
+          currentIndex -= 1;
+      
+          // And swap it with the current element.
+          temporaryValue = array[currentIndex];
+          array[currentIndex] = array[randomIndex];
+          array[randomIndex] = temporaryValue;
+        }
+      
+        return array;
+      }
+
+      if(!req.query.version){
+        req.query.version = "v2";
+      }
+
+      let show_mood_order = true;
+      if(req.query.version && req.query.version=='v3'){
+        show_mood_order = true;
+      }
+      
+      const responseFromService = {};
+      req.query.isActive = true;
+
+      const getPromotionalBanner = await songService.getPromotionalBanner({'status':'active'});
+      let bannerDetails = {};
+      if(getPromotionalBanner.length){
+        bannerDetails.title = getPromotionalBanner[0].title;
+        bannerDetails.image_url_light_theme = process.env.MEDIA_PATH + "banner/"+getPromotionalBanner[0].img_light;
+        bannerDetails.image_url_dark_theme = process.env.MEDIA_PATH + "banner/"+getPromotionalBanner[0].img_dark;
+      }
+
+      responseFromService.topBanner = bannerDetails;
+
+      let featured_data = [];
+
+      let featured_song = await songService.findSongs({'featured':'1', limit:10});
+      for (let i in featured_song) {
+        if (featured_song[i].thumb_img) {
+          featured_song[i].thumb_img = process.env.MEDIA_PATH + "songs/thumb_image/" + featured_song[i].thumb_img;
+        }
+        if (featured_song[i].media_file) {
+          featured_song[i].media_file = process.env.MEDIA_PATH + "songs/" + featured_song[i].media_file;
+        }
+        let songArtist = featured_song[i].artists;
+        let artist_name = [];
+        for(artist of songArtist){
+          let getArtist = await artistService.getArtistById({id:artist});
+          artist_name.push(getArtist.title);
+        }
+        featured_data.push({
+          "id":featured_song[i].id,
+          "playCount": featured_song[i].playCount,
+          "downloadCount": featured_song[i].downloadCount,
+          "title": featured_song[i].title,
+          "description": featured_song[i].description,
+          "thumb_img": featured_song[i].thumb_img,
+          "media_file": featured_song[i].media_file,
+          "artist":artist_name.toString(),
+          "duration": featured_song[i].duration,
+          "type":"song",
+          "title2": slugify(featured_song[i].title)
+        })
+      }
+      const getFeauturedPlaylist = await playlistService.getAllPlaylist({'status':'active','is_deleted':'n','featured':true});
+      for (let i in getFeauturedPlaylist) {
+        if (getFeauturedPlaylist[i].img) {
+          getFeauturedPlaylist[i].thumb_img = process.env.MEDIA_PATH + "playlist/" + getFeauturedPlaylist[i].img;
+        }
+        if (getFeauturedPlaylist[i].banner_image) {
+          getFeauturedPlaylist[i].banner_image = process.env.MEDIA_PATH + "playlist/" + getFeauturedPlaylist[i].banner_image;
+        }
+        let songArtist = getFeauturedPlaylist[i].artist;
+        if(songArtist!=null){
+          let getArtist = await artistService.getArtistById({id:artist});
+          getFeauturedPlaylist[i].artist = getArtist.title.toString();
+        }
+        
+        
+
+        getFeauturedPlaylist[i].songCount = getFeauturedPlaylist[i].songs.length;
+        getFeauturedPlaylist[i].type = "playlist";
+        delete getFeauturedPlaylist[i].createdAt;
+        delete getFeauturedPlaylist[i].updatedAt;
+        delete getFeauturedPlaylist[i].status;
+        delete getFeauturedPlaylist[i].display_in_home;
+        delete getFeauturedPlaylist[i].is_deleted;
+        delete getFeauturedPlaylist[i].display_in_home_playlist;
+        delete getFeauturedPlaylist[i].songs;
+        delete getFeauturedPlaylist[i].category;
+        delete getFeauturedPlaylist[i].mood;
+        featured_data.push(getFeauturedPlaylist[i]);
+      }
+
+      const getFeauturedFilm = await filmService.getAllFilm({'status':'active','is_deleted':'n','featured':true});
+      for (let i in getFeauturedFilm) {
+        if (getFeauturedFilm[i].img) {
+          getFeauturedFilm[i].thumb_img = process.env.MEDIA_PATH + "film/" + getFeauturedFilm[i].img;
+        }
+        if (getFeauturedFilm[i].banner_image) {
+          getFeauturedFilm[i].banner_image = process.env.MEDIA_PATH + "film/" + getFeauturedFilm[i].banner_image;
+        }
+        getFeauturedFilm[i].type = "film";
+        let songCount = await songService.findSongs({film:getFeauturedFilm[i].id, count:true});
+        getFeauturedFilm[i].songCount = songCount;
+        featured_data.push(getFeauturedFilm[i]);
+      }
+
+      const getFeauturedPodcast = await podcastService.getAllPodcast({'status':'active','is_deleted':'n','featured':true});
+      for (let i in getFeauturedPodcast) {
+        if (getFeauturedPodcast[i].img) {
+          getFeauturedPodcast[i].thumb_img = process.env.MEDIA_PATH + "podcast/" + getFeauturedPodcast[i].img;
+        }
+        getFeauturedPodcast[i].type = "podcast";
+        let songCount = await podcastService.searchAllPodcast({podcast:getFeauturedPodcast[i].id, count:true});
+        getFeauturedPodcast[i].songCount = songCount;
+        
+        featured_data.push(getFeauturedPodcast[i]);
+      }
+
+      const getFeauturedArtist = await artistService.getArtistList({'status':'active','is_deleted':'n','featured':true});
+      for (let i in getFeauturedArtist) {
+        if (getFeauturedArtist[i].img) {
+          getFeauturedArtist[i].thumb_img = process.env.MEDIA_PATH + "artists/" + getFeauturedArtist[i].img;
+        }
+        if (getFeauturedArtist[i].banner_image) {
+          getFeauturedArtist[i].banner_image = process.env.MEDIA_PATH + "artists/" + getFeauturedArtist[i].banner_image;
+        }
+        getFeauturedArtist[i].type = "artist";
+
+        let songCount = await songService.findSongs({artist:getFeauturedArtist[i].id.toString(), count:true});
+        
+        getFeauturedArtist[i].songCount = songCount;
+
+        featured_data.push(getFeauturedArtist[i]);
+      }
+
+      const getFeauturedActor = await actorService.getAllActor({'status':'active','is_deleted':'n','featured':true});
+      for (let i in getFeauturedActor) {
+        if (getFeauturedActor[i].img) {
+          getFeauturedActor[i].thumb_img = process.env.MEDIA_PATH + "actor/" + getFeauturedActor[i].img;
+        }
+        if (getFeauturedActor[i].banner_image) {
+          getFeauturedActor[i].banner_image = process.env.MEDIA_PATH + "artists/" + getFeauturedActor[i].banner_image;
+        }
+        getFeauturedActor[i].type = "actor";
+        let songCount = await songService.findSongs({actor:getFeauturedActor[i].id.toString(), count:true});
+        getFeauturedActor[i].songCount = songCount;
+
+        featured_data.push(getFeauturedActor[i]);
+      }
+
+
+
+      responseFromService.featured = shuffle(featured_data);
+
+
+      let moodData= [];
+      
+      const getAllMood = await songService.getAllMood({'status':'active','is_deleted':'n','display_in_home':true},req.query.version?"order":"");
+      for (let i in getAllMood) {
+        delete getAllMood[i].createdAt;
+        delete getAllMood[i].updatedAt;
+        delete getAllMood[i].status;
+        delete getAllMood[i].display_in_home;
+        delete getAllMood[i].is_deleted;
+
+        if(getAllMood[i].img){
+          getAllMood[i].img = process.env.MEDIA_PATH + "mood/" + getAllMood[i].img;
+          getAllMood[i].banner_image = getAllMood[i].img;
+        }
+
+        if(show_mood_order){
+          let findSong = await songService.findMoodSongs({mood_id:getAllMood[i].id, limit:10});
+          let songs = [];
+          for (let item of findSong) {
+            let songItem = item.song_id
+            if (songItem.thumb_img) {
+              songItem.thumb_img = process.env.MEDIA_PATH + "songs/thumb_image/" + songItem.thumb_img;
+            }
+            if (songItem.media_file) {
+              songItem.media_file = process.env.MEDIA_PATH + "songs/" + songItem.media_file;
+            }
+            let songArtist = songItem.artists;
+            let artist_name = [];
+            for(artist of songArtist){
+              let getArtist = await artistService.getArtistById({id:artist});
+              artist_name.push(getArtist.title);
+            }
+            songs.push({
+              "id":songItem.id,
+              "playCount": songItem.playCount,
+              "downloadCount": songItem.downloadCount,
+              "title": songItem.title,
+              "description": songItem.description,
+              "thumb_img": songItem.thumb_img,
+              "media_file": songItem.media_file,
+              "artist":artist_name.toString(),
+              "duration": songItem.duration,
+              "title2": slugify(songItem.title)
+            })
+          }
+          getAllMood[i].songs = songs;
+          moodData.push(getAllMood[i]);
+        }else{
+          let findSong = await songService.findSongs({mood:getAllMood[i].id, limit:10});
+          let songs = [];
+          for (let i in findSong) {
+            if (findSong[i].thumb_img) {
+              findSong[i].thumb_img = process.env.MEDIA_PATH + "songs/thumb_image/" + findSong[i].thumb_img;
+            }
+            if (findSong[i].media_file) {
+              findSong[i].media_file = process.env.MEDIA_PATH + "songs/" + findSong[i].media_file;
+            }
+            let songArtist = findSong[i].artists;
+            let artist_name = [];
+            for(artist of songArtist){
+              let getArtist = await artistService.getArtistById({id:artist});
+              artist_name.push(getArtist.title);
+            }
+            songs.push({
+              "id":findSong[i].id,
+              "playCount": findSong[i].playCount,
+              "downloadCount": findSong[i].downloadCount,
+              "title": findSong[i].title,
+              "description": findSong[i].description,
+              "thumb_img": findSong[i].thumb_img,
+              "media_file": findSong[i].media_file,
+              "artist":artist_name.toString(),
+              "duration": findSong[i].duration,
+              "title2": slugify(findSong[i].title)
+            })
+          }
+           //console.log(findSong);
+          getAllMood[i].songs = songs;
+          moodData.push(getAllMood[i]);
+        }
+      }
+
+
+      let findSong = await songService.findSongs({limit:10});
+      let allMoodSong = [];
+      for (let i in findSong) {
+        if (findSong[i].thumb_img) {
+          findSong[i].thumb_img = process.env.MEDIA_PATH + "songs/thumb_image/" + findSong[i].thumb_img;
+        }
+        if (findSong[i].media_file) {
+          findSong[i].media_file = process.env.MEDIA_PATH + "songs/" + findSong[i].media_file;
+        }
+        let songArtist = findSong[i].artists;
+        let artist_name = [];
+        for(artist of songArtist){
+          let getArtist = await artistService.getArtistById({id:artist});
+          artist_name.push(getArtist.title);
+        }
+        allMoodSong.push({
+          "id":findSong[i].id,
+          "playCount": findSong[i].playCount,
+          "downloadCount": findSong[i].downloadCount,
+          "title": findSong[i].title,
+          "description": findSong[i].description,
+          "thumb_img": findSong[i].thumb_img,
+          "media_file": findSong[i].media_file,
+          "artist":artist_name.toString(),
+          "duration": findSong[i].duration,
+          "title2": slugify(findSong[i].title)
+        })
+      }
+      moodData.push({
+        "img": "",
+        "title": "All",
+        "description": "",
+        "id": "all",
+        "songs": allMoodSong
+      });
+
+      
+      responseFromService.moodList = moodData;
+
+      const getMainBanner = await songService.getMainBanner({'status':'active'});
+      let mainbannerDetails = [];
+      if(getMainBanner.length){
+        mainbannerDetails.push({image_url:process.env.MEDIA_PATH + "banner/"+getMainBanner[0].img})
+        
+      }
+
+      responseFromService.mainBanner = mainbannerDetails;
+
+      let recentPlay = [];
+      const recentPlaySong = await songService.getSongsList({limit:5});
+      for (let i in recentPlaySong) {
+        if (recentPlaySong[i].thumb_img) {
+          recentPlaySong[i].thumb_img = process.env.MEDIA_PATH + "songs/thumb_image/" + recentPlaySong[i].thumb_img;
+        }
+        if (recentPlaySong[i].media_file) {
+          recentPlaySong[i].media_file = process.env.MEDIA_PATH + "songs/" + recentPlaySong[i].media_file;
+        }
+        let songArtist = recentPlaySong[i].artists;
+        let artist_name = [];
+        for(artist of songArtist){
+          let getArtist = await artistService.getArtistById({id:artist});
+          artist_name.push(getArtist.title);
+        }
+        recentPlay.push({
+          "id":recentPlaySong[i].id,
+          "playCount": recentPlaySong[i].playCount,
+          "downloadCount": recentPlaySong[i].downloadCount,
+          "title": recentPlaySong[i].title,
+          "description": recentPlaySong[i].description,
+          "thumb_img": recentPlaySong[i].thumb_img,
+          "media_file": recentPlaySong[i].media_file,
+          "artist":artist_name.toString(),
+          "duration": recentPlaySong[i].duration,
+          "title2": slugify(recentPlaySong[i].title)
+        })
+      }
+      responseFromService.recentPlay = recentPlay;
+
+
+      const searchSong = await songService.findSongs({made_for_you:"1", limit:10});
+      let madeForYou = [];
+      for (let i in searchSong) {
+        if (searchSong[i].thumb_img) {
+          searchSong[i].thumb_img = process.env.MEDIA_PATH + "songs/thumb_image/" + searchSong[i].thumb_img;
+        }
+        if (searchSong[i].media_file) {
+          searchSong[i].media_file = process.env.MEDIA_PATH + "songs/" + searchSong[i].media_file;
+        }
+        let songArtist = searchSong[i].artists;
+        let artist_name = [];
+        for(artist of songArtist){
+          let getArtist = await artistService.getArtistById({id:artist});
+          artist_name.push(getArtist.title);
+        }
+        madeForYou.push({
+          "id":searchSong[i].id,
+          "playCount": searchSong[i].playCount,
+          "downloadCount": searchSong[i].downloadCount,
+          "title": searchSong[i].title,
+          "description": searchSong[i].description,
+          "thumb_img": searchSong[i].thumb_img,
+          "media_file": searchSong[i].media_file,
+          "artist":artist_name.toString(),
+          "duration": searchSong[i].duration,
+          "title2": slugify(searchSong[i].title)
+        })
+      }
+
+
+      
+      responseFromService.madeForYou = madeForYou;
+
+
+      const artists = await artistService.getAllArtist({'status':'active','is_deleted':'n','display_in_home':true});
+      for (let i in artists) {
+        if (artists[i].img) {
+            artists[i].img = process.env.MEDIA_PATH + "artists/" + artists[i].img;
+        }
+        if (artists[i].banner_image) {
+          artists[i].banner_image = process.env.MEDIA_PATH + "artists/" + artists[i].banner_image;
+        }
+        delete artists[i].createdAt;
+        delete artists[i].updatedAt;
+        delete artists[i].status;
+        delete artists[i].display_in_home;
+        delete artists[i].is_deleted;
+      }
+      responseFromService.artists = artists;
+
+
+      const getPlaylist = await playlistService.getAllPlaylist({'status':'active','is_deleted':'n','display_in_home_playlist':true},req.query.version?"order":"");
+      for (let i in getPlaylist) {
+        if (getPlaylist[i].img) {
+          getPlaylist[i].img = process.env.MEDIA_PATH + "playlist/" + getPlaylist[i].img;
+        }
+        if (getPlaylist[i].banner_image) {
+          getPlaylist[i].banner_image = process.env.MEDIA_PATH + "playlist/" + getPlaylist[i].banner_image;
+        }
+        getPlaylist[i].songCount = getPlaylist[i].songs.length;
+        delete getPlaylist[i].createdAt;
+        delete getPlaylist[i].updatedAt;
+        delete getPlaylist[i].status;
+        delete getPlaylist[i].display_in_home;
+        delete getPlaylist[i].is_deleted;
+        delete getPlaylist[i].display_in_home_playlist;
+        delete getPlaylist[i].songs;
+        delete getPlaylist[i].category;
+        delete getPlaylist[i].mood;
+      }
+      responseFromService.playListForYou = getPlaylist;
+
+      
+      
+
+
+      //Category
+      let podcastCategory;
+      const categories = await categoryService.getAllCategory({'status':'active','is_deleted':'n','display_in_home':true});
+      for (let i in categories) {
+        if (categories[i].img) {
+          categories[i].img = process.env.MEDIA_PATH + "categories/" + categories[i].img;
+        }
+        if (categories[i].banner_image) {
+          categories[i].banner_image = process.env.MEDIA_PATH + "categories/" + categories[i].banner_image;
+        }
+        delete categories[i].createdAt;
+        delete categories[i].updatedAt;
+        delete categories[i].status;
+        delete categories[i].display_in_home;
+        delete categories[i].is_deleted;
+        podcastCategory = categories[i];
+      }
+      responseFromService.categories = categories;
+
+      //Category Advertisement
+
+      const topAdvertisement = await homeSectionLibraryService.getAllAdvertisement({'status':'active',position:'category'});
+      for (let i in topAdvertisement) {
+        if (topAdvertisement[i].img) {
+          topAdvertisement[i].img = process.env.MEDIA_PATH + "advertisement/" + topAdvertisement[i].img;
+        }
+        if (topAdvertisement[i].banner_image) {
+          topAdvertisement[i].banner_image = process.env.MEDIA_PATH + "advertisement/" + topAdvertisement[i].banner_image;
+        }
+            topAdvertisement[i].songCount = topAdvertisement[i].songs.length;
+            delete topAdvertisement[i].createdAt;
+            delete topAdvertisement[i].updatedAt;
+            delete topAdvertisement[i].status;
+            delete topAdvertisement[i].notification_type;
+            delete topAdvertisement[i].notification_sub_type;
+            delete topAdvertisement[i].display_in_home_playlist;
+            delete topAdvertisement[i].is_deleted;
+            delete topAdvertisement[i].status;
+            delete topAdvertisement[i].start_date;
+            delete topAdvertisement[i].end_date;
+            delete topAdvertisement[i].expiry_days;
+            delete topAdvertisement[i].songs;
+            delete topAdvertisement[i].playlistBy;
+            delete topAdvertisement[i].artist;
+            delete topAdvertisement[i].actor;
+            delete topAdvertisement[i].playlist;
+            delete topAdvertisement[i].film;
+            delete topAdvertisement[i].song;
+            delete topAdvertisement[i].podcast;
+            delete topAdvertisement[i].section;
+      }
+      responseFromService.top_position_advertisement = topAdvertisement;
+
+
+
+      let top_pick_artists = await artistService.getAllArtist({'status':'active','is_deleted':'n'}, 0, 10, req.query.version?"order":"");
+      top_pick_artists = top_pick_artists.slice(0,10);
+      for (let i in top_pick_artists) {
+        if (top_pick_artists[i].img) {
+            top_pick_artists[i].img = process.env.MEDIA_PATH + "artists/" + top_pick_artists[i].img;
+        }
+        if (top_pick_artists[i].banner_image) {
+          top_pick_artists[i].banner_image = process.env.MEDIA_PATH + "artists/" + top_pick_artists[i].banner_image;
+      }
+        delete top_pick_artists[i].createdAt;
+        delete top_pick_artists[i].updatedAt;
+        delete top_pick_artists[i].status;
+        delete top_pick_artists[i].display_in_home;
+        delete top_pick_artists[i].is_deleted;
+        top_pick_artists[i].type="artist";
+      }
+
+      let top_pick_actor = await actorService.getAllActor({'status':'active','is_deleted':'n'}, req.query.version?"order":"");
+      top_pick_actor = top_pick_actor.slice(0,10);
+      for (let i in top_pick_actor) {
+        if (top_pick_actor[i].img) {
+            top_pick_actor[i].img = process.env.MEDIA_PATH + "actor/" + top_pick_actor[i].img;
+        }
+        if (top_pick_actor[i].banner_image) {
+          top_pick_actor[i].banner_image = process.env.MEDIA_PATH + "actor/" + top_pick_actor[i].banner_image;
+        }
+        top_pick_actor[i].type="actor";
+        delete top_pick_actor[i].createdAt;
+        delete top_pick_actor[i].updatedAt;
+        delete top_pick_actor[i].status;
+        delete top_pick_actor[i].display_in_home;
+        delete top_pick_actor[i].is_deleted;
+      }
+
+      let topPicksData = {
+        artist : top_pick_artists,
+        actor : top_pick_actor
+      };
+      responseFromService.topPicks = topPicksData;
+
+      //New Song
+      let newAddedSong = [];
+      const newSongs = await songService.findSongs({new_song:"1"});
+      for (let i in newSongs) {
+        if (newSongs[i].thumb_img) {
+          newSongs[i].thumb_img = process.env.MEDIA_PATH + "songs/thumb_image/" + newSongs[i].thumb_img;
+        }
+        if (newSongs[i].media_file) {
+          newSongs[i].media_file = process.env.MEDIA_PATH + "songs/" + newSongs[i].media_file;
+        }
+        let songArtist = newSongs[i].artists;
+        let artist_name = [];
+        for(artist of songArtist){
+          let getArtist = await artistService.getArtistById({id:artist});
+          artist_name.push(getArtist.title);
+        }
+
+        newAddedSong.push({
+          "id":newSongs[i].id,
+          "playCount": newSongs[i].playCount,
+          "downloadCount": newSongs[i].downloadCount,
+          "title": newSongs[i].title,
+          "description": newSongs[i].description,
+          "thumb_img": newSongs[i].thumb_img,
+          "media_file": newSongs[i].media_file,
+          "artist":artist_name.toString(),
+          "duration": newSongs[i].duration,
+          "title2": slugify(newSongs[i].title)
+        })
+      }
+      responseFromService.newAdded = newAddedSong;
+
+
+      let topChartData = [
+        {
+            "img": process.env.MEDIA_PATH+"banner/top_chart.png",
+            "title": "Folk Songs",
+            "id": "62ff14de18eb682a54b14ea0",
+            "songCount": 10
+        },
+        {
+            "img": process.env.MEDIA_PATH+"banner/top_chart2.png",
+            "title": "Best Rock Songs",
+            "id": "62ff14de18eb682a54b14ea0",
+            "songCount": 15
+        },
+        {
+          "img": process.env.MEDIA_PATH+"banner/top_chart.png",
+          "title": "Miles",
+          "id": "62ff14de18eb682a54b14ea0",
+          "songCount": 12
+      }
+      ];
+      responseFromService.topChart = topChartData;
+
+
+      let trendingData = [
+        {
+            "title": "Rock Band",
+            "id": "62ff14de18eb682a54b14ea0",
+            "songs" : [
+                        {
+                          "id": "62fdb04a630cf75b08136f53",
+                          "playCount": 0,
+                          "downloadCount": 0,
+                          "title": "Running Up the hill",
+                          "description": "",
+                          "thumb_img": process.env.MEDIA_PATH+"banner/made_for_you1.webp",
+                          "media_file": process.env.MEDIA_PATH+"banner/sample_music.mp3",
+                          "artist": "Kate Bush Solo",
+                          "duration": "132"
+                        },
+                        {
+                          "id": "62fdb04a630cf75b08136f53",
+                          "playCount": 0,
+                          "downloadCount": 0,
+                          "title": "I Don't Know",
+                          "description": "",
+                          "thumb_img": process.env.MEDIA_PATH+"banner/made_for_you2.webp",
+                          "media_file": process.env.MEDIA_PATH+"banner/sample_music.mp3",
+                          "artist": "Jane Cooper",
+                          "duration": "132"
+                        },
+                        {
+                          "id": "62fdb04a630cf75b08136f53",
+                          "playCount": 0,
+                          "downloadCount": 0,
+                          "title": "Running Up the hill",
+                          "description": "",
+                          "thumb_img": process.env.MEDIA_PATH+"banner/made_for_you1.webp",
+                          "media_file": process.env.MEDIA_PATH+"banner/sample_music.mp3",
+                          "artist": "Kate Bush Solo",
+                          "duration": "132"
+                      },
+                      {
+                        "id": "62fdb04a630cf75b08136f53",
+                        "playCount": 0,
+                        "downloadCount": 0,
+                        "title": "Running Up the hill",
+                        "description": "",
+                        "thumb_img": process.env.MEDIA_PATH+"banner/made_for_you1.webp",
+                        "media_file": process.env.MEDIA_PATH+"banner/sample_music.mp3",
+                        "artist": "Kate Bush Solo",
+                        "duration": "132"
+                    }
+                  ]
+        },
+        {
+          "title": "Bangla Folk",
+          "id": "62ff14de18eb682a54b14ea0",
+          "songs" : [
+                      {
+                        "id": "62fdb04a630cf75b08136f53",
+                        "playCount": 0,
+                        "downloadCount": 0,
+                        "title": "Running Up the hill",
+                        "description": "",
+                        "thumb_img": process.env.MEDIA_PATH+"banner/made_for_you1.webp",
+                        "media_file": process.env.MEDIA_PATH+"banner/sample_music.mp3",
+                        "artist": "Kate Bush Solo",
+                        "duration": "132"
+                      },
+                      {
+                        "id": "62fdb04a630cf75b08136f53",
+                        "playCount": 0,
+                        "downloadCount": 0,
+                        "title": "I Don't Know",
+                        "description": "",
+                        "thumb_img": process.env.MEDIA_PATH+"banner/made_for_you2.webp",
+                        "media_file": process.env.MEDIA_PATH+"banner/sample_music.mp3",
+                        "artist": "Jane Cooper",
+                        "duration": "132"
+                      }
+                ]
+        }
+      ];
+      responseFromService.trending = trendingData;
+
+
+      let podcastMain = await podcastService.getAllPodcast({is_deleted:"n",status:"active"}, req.query.version?"order":"");
+      for (let i in podcastMain) {
+        if (podcastMain[i].img) {
+            podcastMain[i].img = process.env.MEDIA_PATH + "podcast/" + podcastMain[i].img;
+        }
+        if (podcastMain[i].banner_image) {
+          podcastMain[i].banner_image = process.env.MEDIA_PATH + "podcast/" + podcastMain[i].banner_image;
+        }
+        delete podcastMain[i].createdAt;
+        delete podcastMain[i].updatedAt;
+        delete podcastMain[i].status;
+        delete podcastMain[i].display_in_home;
+        delete podcastMain[i].is_deleted;
+      }
+      responseFromService.podcastMain = podcastMain;
+
+      let podcast = [];
+      podcast.push(podcastCategory)
+
+      // const recentPodcast = await songService.getPodcastList({limit:5});
+      // for (let i in recentPodcast) {
+      //   if (recentPodcast[i].thumb_img) {
+      //     recentPodcast[i].thumb_img = process.env.MEDIA_PATH + "podcast/thumb_image/" + recentPodcast[i].thumb_img;
+      //   }
+      //   if (recentPodcast[i].media_file) {
+      //     recentPodcast[i].media_file = process.env.MEDIA_PATH + "podcast/" + recentPodcast[i].media_file;
+      //   }
+      //   let songArtist = recentPodcast[i].artists;
+      //   let artist_name = [];
+      //   for(artist of songArtist){
+      //     let getArtist = await artistService.getArtistById({id:artist});
+      //     artist_name.push(getArtist.title);
+      //   }
+      //   podcast.push({
+      //     "id":recentPodcast[i].id,
+      //     "playCount": recentPodcast[i].playCount,
+      //     "downloadCount": recentPodcast[i].downloadCount,
+      //     "title": recentPodcast[i].title,
+      //     "description": recentPodcast[i].description,
+      //     "thumb_img": recentPodcast[i].thumb_img,
+      //     "media_file": recentPodcast[i].media_file,
+      //     "artist":artist_name.toString(),
+      //     "duration": recentPodcast[i].duration
+      //   })
+      // }
+      responseFromService.podcast = podcast;
+
+
+      const getHomeSection = await songService.getAllHomeSection({'status':'active','is_deleted':'n'});
+      let trending = [];
+      for (let i in getHomeSection) {
+
+        delete getHomeSection[i].createdAt;
+        delete getHomeSection[i].updatedAt;
+        let search = {status:'active',section: { $in:[getHomeSection[i].id.toString()] }};
+        let findLibrary = await homeSectionLibraryService.getAllHomeSectionLibrary(search,"",0,10);
+        if(findLibrary.length){
+          for (let j in findLibrary) {
+            if (findLibrary[j].img) {
+              findLibrary[j].img = process.env.MEDIA_PATH + "homesection/" + findLibrary[j].img;
+            }
+            if (findLibrary[j].banner_image) {
+              findLibrary[j].banner_image = process.env.MEDIA_PATH + "homesection/" + findLibrary[j].banner_image;
+            }
+            findLibrary[j].songCount = findLibrary[j].songs.length;
+            delete findLibrary[j].createdAt;
+            delete findLibrary[j].updatedAt;
+            delete findLibrary[j].status;
+            delete findLibrary[j].notification_type;
+            delete findLibrary[j].notification_sub_type;
+            delete findLibrary[j].display_in_home_playlist;
+            delete findLibrary[j].is_deleted;
+            delete findLibrary[j].status;
+            delete findLibrary[j].start_date;
+            delete findLibrary[j].end_date;
+            delete findLibrary[j].expiry_days;
+            delete findLibrary[j].songs;
+            delete findLibrary[j].playlistBy;
+            delete findLibrary[j].artist;
+            delete findLibrary[j].actor;
+            delete findLibrary[j].playlist;
+            delete findLibrary[j].film;
+            delete findLibrary[j].song;
+            delete findLibrary[j].podcast;
+            delete findLibrary[j].section;
+          }
+          trending.push({
+            title : getHomeSection[i].title,
+            id: getHomeSection[i].id,
+            library : findLibrary,
+            banner_image : getHomeSection[i].banner_image?process.env.MEDIA_PATH + "home_section_banner/" + getHomeSection[i].banner_image:process.env.MEDIA_PATH + "home_section_banner/Movie_Icon.png",
+            type:"library"
+          });
+
+          let sectionAdvertisement = await homeSectionLibraryService.getAllAdvertisement({'status':'active',position:getHomeSection[i].id});
+          if(sectionAdvertisement.length){
+            for (let i in sectionAdvertisement) {
+              if (sectionAdvertisement[i].img) {
+                sectionAdvertisement[i].img = process.env.MEDIA_PATH + "advertisement/" + sectionAdvertisement[i].img;
+              }
+              if (sectionAdvertisement[i].banner_image) {
+                sectionAdvertisement[i].banner_image = process.env.MEDIA_PATH + "advertisement/" + sectionAdvertisement[i].banner_image;
+              }
+                  sectionAdvertisement[i].songCount = sectionAdvertisement[i].songs.length;
+                  sectionAdvertisement[i].type = "advertisement";
+                  delete sectionAdvertisement[i].createdAt;
+                  delete sectionAdvertisement[i].updatedAt;
+                  delete sectionAdvertisement[i].status;
+                  delete sectionAdvertisement[i].notification_type;
+                  delete sectionAdvertisement[i].notification_sub_type;
+                  delete sectionAdvertisement[i].display_in_home_playlist;
+                  delete sectionAdvertisement[i].is_deleted;
+                  delete sectionAdvertisement[i].status;
+                  delete sectionAdvertisement[i].start_date;
+                  delete sectionAdvertisement[i].end_date;
+                  delete sectionAdvertisement[i].expiry_days;
+                  delete sectionAdvertisement[i].songs;
+                  delete sectionAdvertisement[i].playlistBy;
+                  delete sectionAdvertisement[i].artist;
+                  delete sectionAdvertisement[i].actor;
+                  delete sectionAdvertisement[i].playlist;
+                  delete sectionAdvertisement[i].film;
+                  delete sectionAdvertisement[i].song;
+                  delete sectionAdvertisement[i].podcast;
+                  delete sectionAdvertisement[i].section;
+
+                  //trending.push(sectionAdvertisement[i]);
+            }
+            trending.push({
+              advertisement : sectionAdvertisement,
+              type:"advertisement"
+            });
+          }
+         
+          
+          
+        }
+      }
+      responseFromService.trending = trending;
+
+
+
+
+      response.status = 200;
+      response.message = "Data Fetched";
+      response.body = responseFromService;
+    } catch (error) {
+      console.log("Something went wrong: Controller: getAllHomes", error);
+      response.message = error.message;
+    }
+    return res.status(response.status).send(response);
+};
+module.exports.getCMS = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    const responseFromService = await categoryService.getCMSBySlug(req.params);
+    response.status = 200;
+    response.message = constants.genericMessage.DATA_FOUND;
+    response.body = responseFromService;
+  } catch (error) {
+    console.log('Something went wrong: Controller: getCMS', error);
+    response.message = error.message;
+  }
+  return res.status(response.status).send(response);
+}
+module.exports.Search = async (req, res) => {
+  let response = { ...constants.defaultServerResponse };
+  try {
+    
+    const responseFromService = {};
+    //Category
+    let podcastCategory;
+    const categories = await categoryService.getAllCategory({'status':'active','is_deleted':'n'});
+    for (let i in categories) {
+      if (categories[i].img) {
+        categories[i].img = process.env.MEDIA_PATH + "categories/" + categories[i].img;
+      }
+      if (categories[i].banner_image) {
+        categories[i].banner_image = process.env.MEDIA_PATH + "categories/" + categories[i].banner_image;
+      }
+      delete categories[i].createdAt;
+      delete categories[i].updatedAt;
+      delete categories[i].status;
+      delete categories[i].display_in_home;
+      delete categories[i].is_deleted;
+      podcastCategory = categories[i];
+    }
+    responseFromService.categories = categories;
+
+
+    //New Song
+    let newAddedSong = [];
+    const newSongs = await songService.findSongs({new_song:"1"});
+    for (let i in newSongs) {
+      if (newSongs[i].thumb_img) {
+        newSongs[i].thumb_img = process.env.MEDIA_PATH + "songs/thumb_image/" + newSongs[i].thumb_img;
+      }
+      if (newSongs[i].media_file) {
+        newSongs[i].media_file = process.env.MEDIA_PATH + "songs/" + newSongs[i].media_file;
+      }
+      let songArtist = newSongs[i].artists;
+      let artist_name = [];
+      for(artist of songArtist){
+        let getArtist = await artistService.getArtistById({id:artist});
+        artist_name.push(getArtist.title);
+      }
+
+      newAddedSong.push({
+        "id":newSongs[i].id,
+        "playCount": newSongs[i].playCount,
+        "downloadCount": newSongs[i].downloadCount,
+        "title": newSongs[i].title,
+        "description": newSongs[i].description,
+        "thumb_img": newSongs[i].thumb_img,
+        "media_file": newSongs[i].media_file,
+        "artist":artist_name.toString(),
+        "duration": newSongs[i].duration,
+        "title2": slugify(newSongs[i].title)
+      })
+    }
+    responseFromService.newAdded = newAddedSong;
+
+
+    response.status = 200;
+    response.message = "Data Fetched";
+    response.body = responseFromService;
+  } catch (error) {
+    console.log("Something went wrong: Controller: getAllHomes", error);
+    response.message = error.message;
+  }
+  return res.status(response.status).send(response);
+};
